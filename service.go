@@ -30,7 +30,6 @@ type Service interface {
 const (
 	stopped     uint32 = 0
 	running     uint32 = 1
-	restarting  uint32 = 2
 	unknownStop uint32 = 0
 	optStop     uint32 = 1
 )
