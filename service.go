@@ -16,6 +16,8 @@ var (
 	ErrIsRunning = errors.New("the service is running, do not need to started it twice")
 	// ErrIsNotRunning indicate that server is not started yet
 	ErrIsNotRunning = errors.New("the service is not running")
+	// ErrIsStopping indicate that server is in stopping state
+	ErrIsStopping = errors.New("the service is stopping")
 	// ErrServerExit indicate that server is exit background without using stop
 	ErrServerExit = errors.New("service exit background without using stop operation")
 )
@@ -30,6 +32,7 @@ type Service interface {
 const (
 	stopped     uint32 = 0
 	running     uint32 = 1
+	stopping    uint32 = 2
 	unknownStop uint32 = 0
 	optStop     uint32 = 1
 )
@@ -145,18 +148,14 @@ func (a *service) stop() error {
 	// No matter what happened blew, the server's stopByOpt
 	// state will be tagged as optStop
 	defer func() {
-		if r := recover(); r != nil {
-			// panic so that Process.pid is nil, so process is not running
-			a.state = stopped
-		}
+		recover()
+		// panic so that Process.pid is nil, so process is not running
+		a.state = stopped
 	}()
 	// Process.pid may be nil, so panic may happened here,
 	// so a defer recover defined
 	pgid, err := syscall.Getpgid(a.cmd.Process.Pid)
 	if err != nil {
-		// if get pgid error,then set the service's state to stopped
-		// and return the error
-		a.state = stopped
 		return err
 	}
 	a.stopByOpt = optStop
@@ -171,9 +170,6 @@ func (a *service) stop() error {
 			return err
 		}
 	}
-	// Now service is exited, set the service' state to
-	// stopped and return no error
-	a.state = stopped
 	return nil
 }
 
@@ -182,12 +178,19 @@ func (a *service) Stop() error {
 	if atomic.CompareAndSwapUint32(&a.state, stopped, stopped) {
 		return ErrIsNotRunning
 	}
+	if atomic.CompareAndSwapUint32(&a.state, stopping, stopped) {
+		return ErrIsStopping
+	}
 	// avoid kill twice or other process
 	a.m.Lock()
 	defer a.m.Unlock()
 	if a.state == stopped {
 		return ErrIsNotRunning
 	}
+	if a.state == stopping {
+		return ErrIsStopping
+	}
+	a.state = stopping
 	return a.stop()
 }
 
