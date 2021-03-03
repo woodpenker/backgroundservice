@@ -5,45 +5,27 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 )
 
 var (
 	// ErrNoCmd indicate that the cmd is not correctly
 	ErrNoCmd = errors.New("the cmd is not correctly")
-	// ErrIsRunning indicate that call start func twice parallel
-	ErrIsRunning = errors.New("the service is running, do not need to started it twice")
 	// ErrIsNotRunning indicate that server is not started yet
 	ErrIsNotRunning = errors.New("the service is not running")
-	// ErrIsStopping indicate that server is in stopping state
-	ErrIsStopping = errors.New("the service is stopping")
-	// ErrServerExit indicate that server is exit background without using stop
-	ErrServerExit = errors.New("service exit background without using stop operation")
 )
 
 // Service is the long running background cmd service
 type Service interface {
-	Stop() error     // Stop stop the background service, if stop failed will return error: ErrNoCmd, ErrIsNotRunning, ErrServerExit. This func call will not block. if call to this function returned error, the background service may still running
-	Start() error    // Start **block function**, calling to this function will block until the server exit or being stopped. the log will be output to the LogPath defined by Flags. If the server start failed, error will be returned, but if the server is stopped by Stop(), no error will be returned. errors will be one of ErrIsRunning and ErrServerExit
-	IsRunning() bool // IsRunning return whether the server is running at the time calling to this function. Note that this state may be changed after this calling returned.
+	Stop() error  // Stop stop the background service, if stop failed will return error: ErrNoCmd, ErrIsNotRunning. This func call will not block. If call to this function returned error, the background service may still running
+	Start() error // Start the log will be output to the LogPath defined by Flags. If the server start failed, error will be returned
+	Wait() error  // Wait blocks until the background service exit. It return the error returned from cmd.Wait(). Calling to this function will block execution of Stop() and Start().
 }
 
-const (
-	stopped     uint32 = 0
-	running     uint32 = 1
-	stopping    uint32 = 2
-	unknownStop uint32 = 0
-	optStop     uint32 = 1
-)
-
 type service struct {
-	state     uint32 // 0 not running, 1 running, 2 restarting
-	stopByOpt uint32 // 1 is stopped by operation, 0 other reason stopped it
-	err       error
-	flags     Flags
-	cmd       *exec.Cmd
-	m         sync.Mutex
+	flags Flags
+	cmd   *exec.Cmd
+	m     sync.Mutex
 }
 
 // Flags is the command line flags, which you want to start with
@@ -102,18 +84,10 @@ func new(flags Flags) *service {
 	}
 }
 
-func (a *service) run() error {
-	// Run the cmd and wait for it to exit
-	// Check if it is stopped by Stop(), no matter what err returned by Run()
-	a.cmd.Run()
-	a.m.Lock()
-	a.state = stopped
-	a.m.Unlock()
-	// If is stopped by Stop(), return no error
-	// If a.stopByOpt is unknownStop, return the error to indicate that this
-	// service is stopped by other reason
-	if atomic.CompareAndSwapUint32(&a.stopByOpt, unknownStop, unknownStop) {
-		return ErrServerExit
+func (a *service) start() error {
+	err := a.cmd.Start()
+	if err != nil {
+		return err
 	}
 	return nil
 }
@@ -121,22 +95,12 @@ func (a *service) run() error {
 // Start start the service,
 // only allowed one service instance exist background
 func (a *service) Start() error {
-	// Check if service exist, if so return error
-	if atomic.CompareAndSwapUint32(&a.state, running, running) {
-		return ErrIsRunning
-	}
 	a.m.Lock()
-	if a.state == running {
-		a.m.Unlock()
-		return ErrIsRunning
-	}
-	a.state = running
-	a.stopByOpt = unknownStop
-	a.m.Unlock()
-	return a.run()
+	defer a.m.Unlock()
+	return a.start()
 }
 
-func (a *service) stop() error {
+func (a *service) stop() (err error) {
 	// The server's state is running now, check if the process and cmd exists
 	if a.cmd == nil {
 		return ErrNoCmd
@@ -145,28 +109,29 @@ func (a *service) stop() error {
 	if a.cmd.Process == nil {
 		return ErrIsNotRunning
 	}
+	if a.cmd.Process.Pid <= 0 {
+		return ErrIsNotRunning
+	}
 	// No matter what happened blew, the server's stopByOpt
 	// state will be tagged as optStop
 	defer func() {
-		recover()
-		// panic so that Process.pid is nil, so process is not running
-		a.state = stopped
+		if r := recover(); r != nil {
+			err = ErrIsNotRunning
+		}
 	}()
-	// Process.pid may be nil, so panic may happened here,
+	// Process.pid may be negative, so panic may happened here,
 	// so a defer recover defined
 	pgid, err := syscall.Getpgid(a.cmd.Process.Pid)
 	if err != nil {
 		return err
 	}
-	a.stopByOpt = optStop
 	err = syscall.Kill(-pgid, syscall.SIGTERM)
 	if err != nil {
 		// if kill -15 failed then try kill - 9 and
 		// return the error if it failed again
 		err = syscall.Kill(-pgid, syscall.SIGKILL)
 		if err != nil {
-			// the process may not exist, so reset stopByOpt
-			a.stopByOpt = unknownStop
+			// the process may not exit
 			return err
 		}
 	}
@@ -174,26 +139,13 @@ func (a *service) stop() error {
 }
 
 func (a *service) Stop() error {
-	// Check if the cmd is stopped, if so return error
-	if atomic.CompareAndSwapUint32(&a.state, stopped, stopped) {
-		return ErrIsNotRunning
-	}
-	if atomic.CompareAndSwapUint32(&a.state, stopping, stopped) {
-		return ErrIsStopping
-	}
-	// avoid kill twice or other process
 	a.m.Lock()
 	defer a.m.Unlock()
-	if a.state == stopped {
-		return ErrIsNotRunning
-	}
-	if a.state == stopping {
-		return ErrIsStopping
-	}
-	a.state = stopping
 	return a.stop()
 }
 
-func (a *service) IsRunning() bool {
-	return atomic.LoadUint32(&a.state) != stopped
+func (a *service) Wait() error {
+	a.m.Lock()
+	defer a.m.Unlock()
+	return a.Wait()
 }

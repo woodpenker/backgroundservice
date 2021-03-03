@@ -1,4 +1,6 @@
-This is a package for create a deamon running background using some cmd binary commands.
+This is a package for create a deamon running background using binary commands, which will not use kill -9 to stop it(instead use kill -15).
+
+Only avaliable on Linux and MacOS.
 
 ---
 Example: Create a http server listening at 8080 with a background  service nc listening at port 9999 and log to run.log. 
@@ -32,7 +34,6 @@ func main() {
 	if err != nil {
 		fmt.Println(err)
 	}
-	fmt.Println("after stop:", am.IsRunning())
 	os.Remove("run.log")
 
 }
@@ -41,9 +42,9 @@ func main() {
 ---
 Methods: 
 ```go
-    Stop() error     // Stop stop the background service, if stop failed will return error: ErrNoCmd, ErrIsNotRunning, ErrServerExit. This func call will not block. if call to this function returned error, the background service may still running
-	Start() error    // Start **block function**, calling to this function will block until the server exit or being stopped. the log will be output to the LogPath defined by Flags. If the server start failed, error will be returned, but if the server is stopped by Stop(), no error will be returned. errors will be one of ErrIsRunning and ErrServerExit
-	IsRunning() bool // IsRunning return whether the server is running at the time calling to this function. Note that this state may be changed after this calling returned.
+	Stop() error  // Stop stop the background service, if stop failed will return error: ErrNoCmd, ErrIsNotRunning. This func call will not block. If call to this function returned error, the background service may still running
+	Start() error // Start the log will be output to the LogPath defined by Flags. If the server start failed, error will be returned
+	Wait() error  // Wait blocks until the background service exit. It return the error returned from cmd.Wait(). Calling to this function will block execution of Stop() and Start().
     New(opts ...Opt) Service     // New return an new background service. If no flags is specified, `nc` will be used default as BinPath and `run.log` will be used default LogPath, and Args will be `-l 9999`
     WithFlags(flags Flags) Opt // WithFlags set the Flags for the cmd. ** Panic ** This will panic if no flags.BinPath is specified. If no LogPath is specified, use run.log by default
 ```

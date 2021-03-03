@@ -6,16 +6,18 @@ import (
 	"os"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/go-playground/assert"
 )
 
-var flags = backgroundservice.Flags{
-	BinPath: "nc",
-	LogPath: "run.log",
-	Args:    []string{"-l", "9999"},
-}
+var (
+	flags = backgroundservice.Flags{
+		BinPath: "nc",
+		LogPath: "run.log",
+		Args:    []string{"-l", "9999"},
+	}
+	lock = sync.Mutex{}
+)
 
 func TestWithFlags(t *testing.T) {
 	cases := []struct {
@@ -78,67 +80,56 @@ func TestWithFlags(t *testing.T) {
 }
 
 func TestRunning(t *testing.T) {
+	lock.Lock()
+	defer lock.Unlock()
 	am := backgroundservice.New(backgroundservice.WithFlags(flags))
 	err := am.Stop()
 	assert.Equal(t, backgroundservice.ErrIsNotRunning, err)
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		e := am.Start()
-		assert.Equal(t, nil, e)
-		wg.Done()
-	}()
-	defer func() {
+	e := am.Start()
+	assert.Equal(t, nil, e)
+	t.Cleanup(func() {
 		am.Stop()
 		os.Remove("run.log")
-	}()
-	tick := time.NewTicker(1 * time.Second)
-	<-tick.C
+	})
 	err = am.Start()
-	assert.Equal(t, backgroundservice.ErrIsRunning, err)
-	assert.Equal(t, true, am.IsRunning())
+	assert.NotEqual(t, nil, err)
+	assert.Equal(t, "exec: already started", err.Error())
 	err = am.Stop()
 	assert.Equal(t, nil, err)
-	assert.Equal(t, false, am.IsRunning())
-	wg.Wait()
 }
 
 func TestStartParallel(t *testing.T) {
+	lock.Lock()
+	defer lock.Unlock()
 	var wg sync.WaitGroup
 	am := backgroundservice.New(backgroundservice.WithFlags(flags))
-	defer func() {
+	t.Cleanup(func() {
 		am.Stop()
 		os.Remove("run.log")
-	}()
-	go func() {
-		am.Start()
-	}()
-	<-time.After(1 * time.Second)
+	})
+	am.Start()
 	wg.Add(10)
 	for i := 0; i < 10; i++ {
 		go func() {
 			e := am.Start()
-			assert.Equal(t, backgroundservice.ErrIsRunning, e)
+			assert.NotEqual(t, nil, e)
+			assert.Equal(t, "exec: already started", e.Error())
 			wg.Done()
 		}()
 	}
-	<-time.After(1 * time.Second)
-	assert.Equal(t, true, am.IsRunning())
 	wg.Wait()
-	assert.Equal(t, true, am.IsRunning())
 }
 
 func TestStopParallel(t *testing.T) {
+	lock.Lock()
+	defer lock.Unlock()
 	var wg sync.WaitGroup
 	am := backgroundservice.New(backgroundservice.WithFlags(flags))
-	defer func() {
+	t.Cleanup(func() {
 		am.Stop()
 		os.Remove("run.log")
-	}()
-	go func() {
-		am.Start()
-	}()
-	<-time.After(1 * time.Second)
+	})
+	am.Start()
 	wg.Add(10)
 	for i := 0; i < 10; i++ {
 		go func() {
@@ -149,7 +140,5 @@ func TestStopParallel(t *testing.T) {
 			wg.Done()
 		}()
 	}
-	<-time.After(1 * time.Second)
-	assert.Equal(t, false, am.IsRunning())
 	wg.Wait()
 }

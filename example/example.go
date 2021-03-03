@@ -36,7 +36,6 @@ func main() {
 	if err != nil {
 		fmt.Println(err)
 	}
-	fmt.Println("after stop:", am.IsRunning())
 	os.Remove("run.log")
 
 }
